@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <title>YOLO with GGML</title>
+    <script src="yolo.js"></script>
+</head>
+<body>
+    <h2>YOLO object detection with <a href="https://github.com/ggerganov/ggml">GGML</a></h2>
+    <p id="msg">Loading model, please wait ...</p>
+    <button id="detect" onclick="onDetect()" disabled>Detect</button>
+    <div>
+        <form id="device-form">
+            <label for="device-option">Video Device:</label>
+            <select name="device-option" id="device-option" onchange="capture()" form="device-option-form">
+            </select>
+        </form>
+    </div>
+    <div>
+        <video id="video" playsinline autoplay></video>
+    </div>
+    <div>
+        <canvas id="ggCanvas" width="640" height="480" style="border:2px solid #d3d3d3;">
+            Your browser does not support the HTML canvas tag.
+        </canvas>
+    </div>
+    <script>
+"use strict";
+var canvas = document.getElementById("ggCanvas");
+var video = document.getElementById("video");
+var ctx = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
+var stream = null;
+var rgba = null;
+
+function onRuntimeInitialized() {
+    let ret = Module.ccall('load_model', 'number');
+    if (ret == 0) {
+        document.getElementById("msg").innerHTML = "Failed to load model";
+        return;
+    }
+    Module.ccall('build_graph');
+    console.log("Allocating memory for rgba, size = " + canvas.width * canvas.height * 4);
+    if (rgba == 0) {
+        document.getElementById("msg").innerHTML = "Failed to allocate memory";
+        return;
+    }
+    document.getElementById("msg").innerHTML = ""
+    document.getElementById("detect").disabled = false;
+    video.addEventListener('play', function() {
+        console.log("Video started");
+        if (video.videoWidth > 0) {
+            let h = video.videoHeight / (video.videoWidth / 640);
+            canvas.setAttribute('height', h);
+        }
+        rgba = Module._malloc(canvas.width * canvas.height * 4);
+        //requestAnimationFrame(onDetect);
+    });
+    getDevices();
+    capture();
+}
+
+function onDetect() {
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    let data = imageData.data;
+    Module.HEAPU8.set(data, rgba);
+    Module.ccall('detect_rgba', 'number', ['number', 'number', 'number'], [canvas.width, canvas.height, rgba]);
+    let result = HEAPU8.subarray(rgba, rgba + data.length);
+    imageData.data.set(result);
+    ctx.putImageData(imageData, 0, 0);
+    //requestAnimationFrame(onDetect);
+}
+
+async function getDevices() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+        throw new Error("enumerateDevices() not supported.");
+    }
+    await navigator.mediaDevices.getUserMedia({ video: true });
+
+    let allDevices = await navigator.mediaDevices.enumerateDevices();
+
+    // clear options before adding
+    let select_item = document.querySelector("#device-option");
+    while (select_item.firstChild) {
+        select_item.removeChild(select_item.firstChild);
+    }
+    // add camera options
+    const videoInputDevices = allDevices.filter(
+        (device) => device.kind === "videoinput"
+    );
+    videoInputDevices.forEach((device) => {
+        var selection = document.createElement("option");
+        selection.value = device.deviceId;
+        selection.text = device.label;
+        document.querySelector("#device-option").appendChild(selection);
+    });
+}
+
+async function capture() {
+    if (stream) {
+        stream.getTracks().forEach((track) => {
+            track.stop();
+        });
+    }
+    let constraints = { audio: false, video: { width: 640, height: 480 } };
+    // get selected device
+    let dev = document.querySelector("#device-option").value;
+    if (dev !== "") {
+        constraints.video.deviceId = { exact: dev };
+    }
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
+    video.srcObject = stream;
+}
+
+Module['onRuntimeInitialized'] = onRuntimeInitialized;
+    </script>
+</body>
+</html>

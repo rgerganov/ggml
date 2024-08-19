@@ -75,15 +75,7 @@ bool load_image(const char *fname, yolo_image & img)
     img.h = h;
     img.c = c;
     img.data.resize(w*h*c);
-    for (int k = 0; k < c; ++k){
-        for (int j = 0; j < h; ++j){
-            for (int i = 0; i < w; ++i){
-                int dst_index = i + w*j + w*h*k;
-                int src_index = k + c*i + c*w*j;
-                img.data[dst_index] = (float)data[src_index]/255.;
-            }
-        }
-    }
+    img.from_rgb(data);
     stbi_image_free(data);
     return true;
 }

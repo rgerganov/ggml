@@ -29,6 +29,30 @@ struct yolo_image {
     void fill(float val) {
         std::fill(data.begin(), data.end(), val);
     }
+
+    void from_rgb(const uint8_t * rgb) {
+        for (int k = 0; k < c; ++k){
+            for (int j = 0; j < h; ++j){
+                for (int i = 0; i < w; ++i){
+                    int dst_index = i + w*j + w*h*k;
+                    int src_index = k + c*i + c*w*j;
+                    data[dst_index] = (float)rgb[src_index]/255.;
+                }
+            }
+        }
+    }
+
+    void from_rgba(const uint8_t * rgba) {
+        for (int k = 0; k < c; ++k){
+            for (int j = 0; j < h; ++j){
+                for (int i = 0; i < w; ++i){
+                    int dst_index = i + w*j + w*h*k;
+                    int src_index = k + 4*i + 4*w*j;
+                    data[dst_index] = (float)rgba[src_index]/255.;
+                }
+            }
+        }
+    }
 };
 
 bool load_image(const char *fname, yolo_image & img);

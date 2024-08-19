@@ -36,6 +36,14 @@ struct conv2d_layer {
     bool activate = true; // true for leaky relu, false for linear
 };
 
+struct yolo_params {
+    float thresh          = 0.5;
+    std::string model     = "data/yolov3-tiny.gguf";
+    std::string fname_inp = "input.jpg";
+    std::string fname_out = "predictions.jpg";
+};
+static yolo_params params;
+
 struct yolo_model {
     int width = 416;
     int height = 416;
@@ -43,7 +51,14 @@ struct yolo_model {
     ggml_backend_t backend = NULL;
     ggml_backend_buffer_t buffer;
     struct ggml_context * ctx;
+
+    std::vector<std::string> labels;
+    std::vector<yolo_image> alphabet;
 };
+static yolo_model model;
+static ggml_context * ctx_cgraph = NULL;
+static ggml_cgraph * gf = NULL;
+static ggml_gallocr_t allocr = NULL;
 
 struct yolo_layer {
     int classes = 80;
@@ -78,90 +93,6 @@ struct detection {
     std::vector<float> prob;
     float objectness;
 };
-
-static bool load_model(const std::string & fname, yolo_model & model) {
-    // initialize the backend
-#ifdef GGML_USE_CUDA
-    fprintf(stderr, "%s: using CUDA backend\n", __func__);
-    model.backend = ggml_backend_cuda_init(0); // init device 0
-    if (!model.backend) {
-        fprintf(stderr, "%s: ggml_backend_cuda_init() failed\n", __func__);
-    }
-#endif
-
-#ifdef GGML_USE_METAL
-    fprintf(stderr, "%s: using Metal backend\n", __func__);
-    model.backend = ggml_backend_metal_init();
-    if (!model.backend) {
-        fprintf(stderr, "%s: ggml_backend_metal_init() failed\n", __func__);
-    }
-#endif
-
-    // if there aren't GPU Backends fallback to CPU backend
-    if (!model.backend) {
-        model.backend = ggml_backend_cpu_init();
-    }
-    struct ggml_context * tmp_ctx = nullptr;
-    struct gguf_init_params gguf_params = {
-        /*.no_alloc   =*/ false,
-        /*.ctx        =*/ &tmp_ctx,
-    };
-    gguf_context * gguf_ctx = gguf_init_from_file(fname.c_str(), gguf_params);
-    if (!gguf_ctx) {
-        fprintf(stderr, "%s: gguf_init_from_file() failed\n", __func__);
-        return false;
-    }
-
-    int num_tensors = gguf_get_n_tensors(gguf_ctx);
-    struct ggml_init_params params {
-            /*.mem_size   =*/ ggml_tensor_overhead() * num_tensors,
-            /*.mem_buffer =*/ NULL,
-            /*.no_alloc   =*/ true,
-    };
-    model.ctx = ggml_init(params);
-    for (int i = 0; i < num_tensors; i++) {
-        const char * name = gguf_get_tensor_name(gguf_ctx, i);
-        struct ggml_tensor * src = ggml_get_tensor(tmp_ctx, name);
-        struct ggml_tensor * dst = ggml_dup_tensor(model.ctx, src);
-        ggml_set_name(dst, name);
-    }
-    model.buffer = ggml_backend_alloc_ctx_tensors(model.ctx, model.backend);
-    // copy tensors from main memory to backend
-    for (struct ggml_tensor * cur = ggml_get_first_tensor(model.ctx); cur != NULL; cur = ggml_get_next_tensor(model.ctx, cur)) {
-        struct ggml_tensor * src = ggml_get_tensor(tmp_ctx, ggml_get_name(cur));
-        size_t n_size = ggml_nbytes(src);
-        ggml_backend_tensor_set(cur, ggml_get_data(src), 0, n_size);
-    }
-    gguf_free(gguf_ctx);
-
-    model.width  = 416;
-    model.height = 416;
-    model.conv2d_layers.resize(13);
-    model.conv2d_layers[7].padding = 0;
-    model.conv2d_layers[9].padding = 0;
-    model.conv2d_layers[9].batch_normalize = false;
-    model.conv2d_layers[9].activate = false;
-    model.conv2d_layers[10].padding = 0;
-    model.conv2d_layers[12].padding = 0;
-    model.conv2d_layers[12].batch_normalize = false;
-    model.conv2d_layers[12].activate = false;
-    for (int i = 0; i < (int)model.conv2d_layers.size(); i++) {
-        char name[256];
-        snprintf(name, sizeof(name), "l%d_weights", i);
-        model.conv2d_layers[i].weights = ggml_get_tensor(model.ctx, name);
-        snprintf(name, sizeof(name), "l%d_biases", i);
-        model.conv2d_layers[i].biases = ggml_get_tensor(model.ctx, name);
-        if (model.conv2d_layers[i].batch_normalize) {
-            snprintf(name, sizeof(name), "l%d_scales", i);
-            model.conv2d_layers[i].scales = ggml_get_tensor(model.ctx, name);
-            snprintf(name, sizeof(name), "l%d_rolling_mean", i);
-            model.conv2d_layers[i].rolling_mean = ggml_get_tensor(model.ctx, name);
-            snprintf(name, sizeof(name), "l%d_rolling_variance", i);
-            model.conv2d_layers[i].rolling_variance = ggml_get_tensor(model.ctx, name);
-        }
-    }
-    return true;
-}
 
 static bool load_labels(const char * filename, std::vector<std::string> & labels)
 {
@@ -416,8 +347,189 @@ static void print_shape(int layer, const ggml_tensor * t)
     printf("Layer %2d output shape:  %3d x %3d x %4d x %3d\n", layer, (int)t->ne[0], (int)t->ne[1], (int)t->ne[2], (int)t->ne[3]);
 }
 
-static struct ggml_cgraph * build_graph(struct ggml_context * ctx_cgraph, const yolo_model & model) {
-    struct ggml_cgraph * gf = ggml_new_graph(ctx_cgraph);
+void detect(yolo_image & img)
+{
+    std::vector<detection> detections;
+    yolo_image sized = letterbox_image(img, model.width, model.height);
+    struct ggml_tensor * input = ggml_graph_get_tensor(gf, "input");
+    ggml_backend_tensor_set(input, sized.data.data(), 0, ggml_nbytes(input));
+
+    if (ggml_backend_is_cpu(model.backend)) {
+        ggml_backend_cpu_set_n_threads(model.backend, 1);
+    }
+    if (ggml_backend_graph_compute(model.backend, gf) != GGML_STATUS_SUCCESS) {
+        fprintf(stderr, "%s: ggml_backend_graph_compute() failed\n", __func__);
+        return;
+    }
+
+    struct ggml_tensor * layer_15 = ggml_graph_get_tensor(gf, "layer_15");
+    yolo_layer yolo16{ 80, {3, 4, 5}, {10, 14, 23, 27, 37,58, 81, 82, 135, 169, 344, 319}, layer_15};
+    apply_yolo(yolo16);
+    get_yolo_detections(yolo16, detections, img.w, img.h, model.width, model.height, params.thresh);
+
+    struct ggml_tensor * layer_22 = ggml_graph_get_tensor(gf, "layer_22");
+    yolo_layer yolo23{ 80, {0, 1, 2}, {10, 14, 23, 27, 37,58, 81, 82, 135, 169, 344, 319}, layer_22};
+    apply_yolo(yolo23);
+    get_yolo_detections(yolo23, detections, img.w, img.h, model.width, model.height, params.thresh);
+
+    do_nms_sort(detections, yolo23.classes, .45);
+    draw_detections(img, detections, params.thresh, model.labels, model.alphabet);
+}
+
+void yolo_print_usage(int argc, char ** argv, const yolo_params & params) {
+    fprintf(stderr, "usage: %s [options]\n", argv[0]);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "options:\n");
+    fprintf(stderr, "  -h, --help            show this help message and exit\n");
+    fprintf(stderr, "  -th T, --thresh T     detection threshold (default: %.2f)\n", params.thresh);
+    fprintf(stderr, "  -m FNAME, --model FNAME\n");
+    fprintf(stderr, "                        model path (default: %s)\n", params.model.c_str());
+    fprintf(stderr, "  -i FNAME, --inp FNAME\n");
+    fprintf(stderr, "                        input file (default: %s)\n", params.fname_inp.c_str());
+    fprintf(stderr, "  -o FNAME, --out FNAME\n");
+    fprintf(stderr, "                        output file (default: %s)\n", params.fname_out.c_str());
+    fprintf(stderr, "\n");
+}
+
+bool yolo_params_parse(int argc, char ** argv, yolo_params & params) {
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+
+        if (arg == "-th" || arg == "--thresh") {
+            params.thresh = std::stof(argv[++i]);
+        } else if (arg == "-m" || arg == "--model") {
+            params.model = argv[++i];
+        } else if (arg == "-i" || arg == "--inp") {
+            params.fname_inp = argv[++i];
+        } else if (arg == "-o" || arg == "--out") {
+            params.fname_out = argv[++i];
+        } else if (arg == "-h" || arg == "--help") {
+            yolo_print_usage(argc, argv, params);
+            exit(0);
+        } else {
+            fprintf(stderr, "error: unknown argument: %s\n", arg.c_str());
+            yolo_print_usage(argc, argv, params);
+            exit(0);
+        }
+    }
+
+    return true;
+}
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// return 1 if successful, 0 otherwise
+int load_model();
+void build_graph();
+uint8_t * detect_rgba(int width, int height, uint8_t * rgba);
+
+#ifdef __cplusplus
+}
+#endif
+
+
+int load_model() {
+    // initialize the backend
+#ifdef GGML_USE_CUDA
+    fprintf(stderr, "%s: using CUDA backend\n", __func__);
+    model.backend = ggml_backend_cuda_init(0); // init device 0
+    if (!model.backend) {
+        fprintf(stderr, "%s: ggml_backend_cuda_init() failed\n", __func__);
+    }
+#endif
+
+#ifdef GGML_USE_METAL
+    fprintf(stderr, "%s: using Metal backend\n", __func__);
+    model.backend = ggml_backend_metal_init();
+    if (!model.backend) {
+        fprintf(stderr, "%s: ggml_backend_metal_init() failed\n", __func__);
+    }
+#endif
+
+    // if there aren't GPU Backends fallback to CPU backend
+    if (!model.backend) {
+        model.backend = ggml_backend_cpu_init();
+    }
+    struct ggml_context * tmp_ctx = nullptr;
+    struct gguf_init_params gguf_params = {
+        /*.no_alloc   =*/ false,
+        /*.ctx        =*/ &tmp_ctx,
+    };
+    gguf_context * gguf_ctx = gguf_init_from_file(params.model.c_str(), gguf_params);
+    if (!gguf_ctx) {
+        fprintf(stderr, "%s: gguf_init_from_file() failed\n", __func__);
+        return 0;
+    }
+
+    int num_tensors = gguf_get_n_tensors(gguf_ctx);
+    struct ggml_init_params params {
+            /*.mem_size   =*/ ggml_tensor_overhead() * num_tensors,
+            /*.mem_buffer =*/ NULL,
+            /*.no_alloc   =*/ true,
+    };
+    model.ctx = ggml_init(params);
+    for (int i = 0; i < num_tensors; i++) {
+        const char * name = gguf_get_tensor_name(gguf_ctx, i);
+        struct ggml_tensor * src = ggml_get_tensor(tmp_ctx, name);
+        struct ggml_tensor * dst = ggml_dup_tensor(model.ctx, src);
+        ggml_set_name(dst, name);
+    }
+    model.buffer = ggml_backend_alloc_ctx_tensors(model.ctx, model.backend);
+    // copy tensors from main memory to backend
+    for (struct ggml_tensor * cur = ggml_get_first_tensor(model.ctx); cur != NULL; cur = ggml_get_next_tensor(model.ctx, cur)) {
+        struct ggml_tensor * src = ggml_get_tensor(tmp_ctx, ggml_get_name(cur));
+        size_t n_size = ggml_nbytes(src);
+        ggml_backend_tensor_set(cur, ggml_get_data(src), 0, n_size);
+    }
+    gguf_free(gguf_ctx);
+
+    model.width  = 416;
+    model.height = 416;
+    model.conv2d_layers.resize(13);
+    model.conv2d_layers[7].padding = 0;
+    model.conv2d_layers[9].padding = 0;
+    model.conv2d_layers[9].batch_normalize = false;
+    model.conv2d_layers[9].activate = false;
+    model.conv2d_layers[10].padding = 0;
+    model.conv2d_layers[12].padding = 0;
+    model.conv2d_layers[12].batch_normalize = false;
+    model.conv2d_layers[12].activate = false;
+    for (int i = 0; i < (int)model.conv2d_layers.size(); i++) {
+        char name[256];
+        snprintf(name, sizeof(name), "l%d_weights", i);
+        model.conv2d_layers[i].weights = ggml_get_tensor(model.ctx, name);
+        snprintf(name, sizeof(name), "l%d_biases", i);
+        model.conv2d_layers[i].biases = ggml_get_tensor(model.ctx, name);
+        if (model.conv2d_layers[i].batch_normalize) {
+            snprintf(name, sizeof(name), "l%d_scales", i);
+            model.conv2d_layers[i].scales = ggml_get_tensor(model.ctx, name);
+            snprintf(name, sizeof(name), "l%d_rolling_mean", i);
+            model.conv2d_layers[i].rolling_mean = ggml_get_tensor(model.ctx, name);
+            snprintf(name, sizeof(name), "l%d_rolling_variance", i);
+            model.conv2d_layers[i].rolling_variance = ggml_get_tensor(model.ctx, name);
+        }
+    }
+    if (!load_labels("data/coco.names", model.labels)) {
+        fprintf(stderr, "%s: failed to load labels from 'data/coco.names'\n", __func__);
+        return 0;
+    }
+    if (!load_alphabet(model.alphabet)) {
+        fprintf(stderr, "%s: failed to load alphabet\n", __func__);
+        return 0;
+    }
+    return 1;
+}
+
+void build_graph() {
+    struct ggml_init_params params0 = {
+        /*.mem_size   =*/ ggml_tensor_overhead()*GGML_DEFAULT_GRAPH_SIZE + ggml_graph_overhead(),
+        /*.mem_buffer =*/ NULL,
+        /*.no_alloc   =*/ true, // the tensors will be allocated later by ggml_gallocr_alloc_graph()
+    };
+    ctx_cgraph = ggml_init(params0);
+    gf = ggml_new_graph(ctx_cgraph);
 
     struct ggml_tensor * input = ggml_new_tensor_4d(ctx_cgraph, GGML_TYPE_F32, model.width, model.height, 3, 1);
     ggml_set_name(input, "input");
@@ -475,92 +587,36 @@ static struct ggml_cgraph * build_graph(struct ggml_context * ctx_cgraph, const 
 
     ggml_build_forward_expand(gf, layer_15);
     ggml_build_forward_expand(gf, layer_22);
-    return gf;
+    allocr = ggml_gallocr_new(ggml_backend_get_default_buffer_type(model.backend));
+    ggml_gallocr_alloc_graph(allocr, gf);
 }
 
-void detect(yolo_image & img, struct ggml_cgraph * gf, const yolo_model & model, float thresh, const std::vector<std::string> & labels, const std::vector<yolo_image> & alphabet)
+uint8_t * detect_rgba(int width, int height, uint8_t * rgba)
 {
-    std::vector<detection> detections;
-    yolo_image sized = letterbox_image(img, model.width, model.height);
-    struct ggml_tensor * input = ggml_graph_get_tensor(gf, "input");
-    ggml_backend_tensor_set(input, sized.data.data(), 0, ggml_nbytes(input));
+    yolo_image img(width, height, 3);
+    img.from_rgba(rgba);
 
-    if (ggml_backend_graph_compute(model.backend, gf) != GGML_STATUS_SUCCESS) {
-        fprintf(stderr, "%s: ggml_backend_graph_compute() failed\n", __func__);
-        return;
-    }
+    //draw_box_width(img, 50, 50, 150, 150, 2, 1, 0, 0);
 
-    struct ggml_tensor * layer_15 = ggml_graph_get_tensor(gf, "layer_15");
-    yolo_layer yolo16{ 80, {3, 4, 5}, {10, 14, 23, 27, 37,58, 81, 82, 135, 169, 344, 319}, layer_15};
-    apply_yolo(yolo16);
-    get_yolo_detections(yolo16, detections, img.w, img.h, model.width, model.height, thresh);
-
-    struct ggml_tensor * layer_22 = ggml_graph_get_tensor(gf, "layer_22");
-    yolo_layer yolo23{ 80, {0, 1, 2}, {10, 14, 23, 27, 37,58, 81, 82, 135, 169, 344, 319}, layer_22};
-    apply_yolo(yolo23);
-    get_yolo_detections(yolo23, detections, img.w, img.h, model.width, model.height, thresh);
-
-    do_nms_sort(detections, yolo23.classes, .45);
-    draw_detections(img, detections, thresh, labels, alphabet);
-}
-
-struct yolo_params {
-    float thresh          = 0.5;
-    std::string model     = "yolov3-tiny.gguf";
-    std::string fname_inp = "input.jpg";
-    std::string fname_out = "predictions.jpg";
-};
-
-void yolo_print_usage(int argc, char ** argv, const yolo_params & params) {
-    fprintf(stderr, "usage: %s [options]\n", argv[0]);
-    fprintf(stderr, "\n");
-    fprintf(stderr, "options:\n");
-    fprintf(stderr, "  -h, --help            show this help message and exit\n");
-    fprintf(stderr, "  -th T, --thresh T     detection threshold (default: %.2f)\n", params.thresh);
-    fprintf(stderr, "  -m FNAME, --model FNAME\n");
-    fprintf(stderr, "                        model path (default: %s)\n", params.model.c_str());
-    fprintf(stderr, "  -i FNAME, --inp FNAME\n");
-    fprintf(stderr, "                        input file (default: %s)\n", params.fname_inp.c_str());
-    fprintf(stderr, "  -o FNAME, --out FNAME\n");
-    fprintf(stderr, "                        output file (default: %s)\n", params.fname_out.c_str());
-    fprintf(stderr, "\n");
-}
-
-bool yolo_params_parse(int argc, char ** argv, yolo_params & params) {
-    for (int i = 1; i < argc; i++) {
-        std::string arg = argv[i];
-
-        if (arg == "-th" || arg == "--thresh") {
-            params.thresh = std::stof(argv[++i]);
-        } else if (arg == "-m" || arg == "--model") {
-            params.model = argv[++i];
-        } else if (arg == "-i" || arg == "--inp") {
-            params.fname_inp = argv[++i];
-        } else if (arg == "-o" || arg == "--out") {
-            params.fname_out = argv[++i];
-        } else if (arg == "-h" || arg == "--help") {
-            yolo_print_usage(argc, argv, params);
-            exit(0);
-        } else {
-            fprintf(stderr, "error: unknown argument: %s\n", arg.c_str());
-            yolo_print_usage(argc, argv, params);
-            exit(0);
+    detect(img);
+    
+    // convert back to uint8_t rgba
+    for (int k = 0; k < img.c; ++k) {
+        for (int i = 0; i < img.w*img.h; ++i) {
+            rgba[i*4+k] = (uint8_t) (255*img.data[i + k*img.w*img.h]);
         }
     }
-
-    return true;
+    return rgba;
 }
 
 int main(int argc, char *argv[])
 {
     ggml_time_init();
-    yolo_model model;
 
-    yolo_params params;
     if (!yolo_params_parse(argc, argv, params)) {
         return 1;
     }
-    if (!load_model(params.model, model)) {
+    if (!load_model()) {
         fprintf(stderr, "%s: failed to load model from '%s'\n", __func__, params.model.c_str());
         return 1;
     }
@@ -569,30 +625,11 @@ int main(int argc, char *argv[])
         fprintf(stderr, "%s: failed to load image from '%s'\n", __func__, params.fname_inp.c_str());
         return 1;
     }
-    std::vector<std::string> labels;
-    if (!load_labels("data/coco.names", labels)) {
-        fprintf(stderr, "%s: failed to load labels from 'data/coco.names'\n", __func__);
-        return 1;
-    }
-    std::vector<yolo_image> alphabet;
-    if (!load_alphabet(alphabet)) {
-        fprintf(stderr, "%s: failed to load alphabet\n", __func__);
-        return 1;
-    }
 
-    struct ggml_init_params params0 = {
-        /*.mem_size   =*/ ggml_tensor_overhead()*GGML_DEFAULT_GRAPH_SIZE + ggml_graph_overhead(),
-        /*.mem_buffer =*/ NULL,
-        /*.no_alloc   =*/ true, // the tensors will be allocated later by ggml_gallocr_alloc_graph()
-    };
-    struct ggml_context * ctx_cgraph = ggml_init(params0);
-    struct ggml_cgraph * gf = build_graph(ctx_cgraph, model);
-
-    ggml_gallocr_t allocr = ggml_gallocr_new(ggml_backend_get_default_buffer_type(model.backend));
-    ggml_gallocr_alloc_graph(allocr, gf);
+    build_graph();
 
     const int64_t t_start_ms = ggml_time_ms();
-    detect(img, gf, model, params.thresh, labels, alphabet);
+    detect(img);
     const int64_t t_detect_ms = ggml_time_ms() - t_start_ms;
     if (!save_image(img, params.fname_out.c_str(), 80)) {
         fprintf(stderr, "%s: failed to save image to '%s'\n", __func__, params.fname_out.c_str());

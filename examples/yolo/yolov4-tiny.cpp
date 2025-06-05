@@ -111,7 +111,7 @@ static bool load_model(const std::string & fname, yolo_model & model) {
 
     model.width  = 416;
     model.height = 416;
-    model.conv2d_layers.resize(3);
+    model.conv2d_layers.resize(5);
     model.conv2d_layers[0].stride = 2;
     model.conv2d_layers[1].stride = 2;
 
@@ -406,11 +406,19 @@ static struct ggml_cgraph * build_graph(struct ggml_context * ctx_cgraph, const 
     print_shape(1, result);
     result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[2]);
     print_shape(2, result);
+    // layer3 is the second half of layer2
+    result = ggml_view_3d(ctx_cgraph, result, result->ne[0], result->ne[1], result->ne[2] / 2,
+                          result->nb[1], result->nb[2], result->nb[2] * (result->ne[2] / 2));
+    print_shape(3, result);
+    result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[3]);
+    print_shape(4, result);
+    result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[4]);
+    print_shape(5, result);
 
-    struct ggml_tensor * layer_2 = result;
-    ggml_set_output(layer_2);
-    ggml_set_name(layer_2, "layer_2");
-    ggml_build_forward_expand(gf, layer_2);
+    struct ggml_tensor * layer_5 = result;
+    ggml_set_output(layer_5);
+    ggml_set_name(layer_5, "layer_5");
+    ggml_build_forward_expand(gf, layer_5);
     return gf;
 
 
@@ -487,15 +495,15 @@ void detect(yolo_image & img, struct ggml_cgraph * gf, const yolo_model & model,
         return;
     }
 
-    ggml_tensor * layer_0 = ggml_graph_get_tensor(gf, "layer_2");
+    ggml_tensor * out_layer = ggml_graph_get_tensor(gf, "layer_5");
 
     std::vector<float> output;
-    output.resize(ggml_nbytes(layer_0)/sizeof(float));
-    ggml_backend_tensor_get(layer_0, output.data(), 0, ggml_nbytes(layer_0));
+    output.resize(ggml_nbytes(out_layer)/sizeof(float));
+    ggml_backend_tensor_get(out_layer, output.data(), 0, ggml_nbytes(out_layer));
 
     // save output to file for debugging
     std::ofstream out("output.bin", std::ios::binary);
-    out.write((char *)output.data(), ggml_nbytes(layer_0));
+    out.write((char *)output.data(), ggml_nbytes(out_layer));
     out.close();
 
     // struct ggml_tensor * layer_15 = ggml_graph_get_tensor(gf, "layer_15");

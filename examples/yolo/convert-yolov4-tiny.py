@@ -36,7 +36,7 @@ if __name__ == '__main__':
     save_conv2d_layer(f, gguf_writer, "l2", 64, 64, 3)
     save_conv2d_layer(f, gguf_writer, "l3", 32, 32, 3)
     save_conv2d_layer(f, gguf_writer, "l4", 32, 32, 3)
-    # save_conv2d_layer(f, gguf_writer, "l5", 256, 512, 3)
+    save_conv2d_layer(f, gguf_writer, "l5", 64, 64, 1)
     # save_conv2d_layer(f, gguf_writer, "l6", 512, 1024, 3)
     # save_conv2d_layer(f, gguf_writer, "l7", 1024, 256, 1)
     # save_conv2d_layer(f, gguf_writer, "l8", 256, 512, 3)

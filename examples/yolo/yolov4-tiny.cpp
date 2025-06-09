@@ -111,7 +111,7 @@ static bool load_model(const std::string & fname, yolo_model & model) {
 
     model.width  = 416;
     model.height = 416;
-    model.conv2d_layers.resize(5);
+    model.conv2d_layers.resize(6);
     model.conv2d_layers[0].stride = 2;
     model.conv2d_layers[1].stride = 2;
 
@@ -171,10 +171,45 @@ static bool load_alphabet(std::vector<yolo_image> & alphabet)
     return true;
 }
 
+static void print_shape(int layer, const ggml_tensor * t)
+{
+    printf("Layer %2d output shape:  %3d x %3d x %4d x %3d\n", layer, (int)t->ne[0], (int)t->ne[1], (int)t->ne[2], (int)t->ne[3]);
+}
+
+
 static ggml_tensor * apply_conv2d(ggml_context * ctx, ggml_tensor * input, const conv2d_layer & layer)
 {
     struct ggml_tensor * result = ggml_conv_2d(ctx, layer.weights, input, layer.stride, layer.stride,
                                                layer.padding, layer.padding, 1, 1);
+    if (layer.batch_normalize) {
+        result = ggml_sub(ctx, result, ggml_repeat(ctx, layer.rolling_mean, result));
+        result = ggml_div(ctx, result, ggml_sqrt(ctx, ggml_repeat(ctx, layer.rolling_variance, result)));
+        result = ggml_mul(ctx, result, ggml_repeat(ctx, layer.scales, result));
+    }
+    result = ggml_add(ctx, result, ggml_repeat(ctx, layer.biases, result));
+    if (layer.activate) {
+        result = ggml_leaky_relu(ctx, result, 0.1f, true);
+    }
+    return result;
+}
+
+static ggml_tensor * ggml_conv_2d_1(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,
+        struct ggml_tensor  * b) {
+
+    ggml_tensor * w = ggml_reshape_2d(ctx, a, a->ne[2], a->ne[0] * a->ne[1] * a->ne[3]);
+    ggml_tensor * inp = ggml_reshape_2d(ctx, b, b->ne[0] * b->ne[1], b->ne[2] * b->ne[3]);
+    inp = ggml_cont(ctx, ggml_transpose(ctx, inp));
+    ggml_tensor * result = ggml_mul_mat(ctx, w, inp);
+    result =  ggml_cont(ctx, ggml_transpose(ctx, result));
+    return ggml_reshape_4d(ctx, result, b->ne[0], b->ne[1], b->ne[2], b->ne[3]);
+}
+
+
+static ggml_tensor * apply_conv2d_1(ggml_context * ctx, ggml_tensor * input, const conv2d_layer & layer)
+{
+    struct ggml_tensor * result = ggml_conv_2d_1(ctx, layer.weights, input);
     if (layer.batch_normalize) {
         result = ggml_sub(ctx, result, ggml_repeat(ctx, layer.rolling_mean, result));
         result = ggml_div(ctx, result, ggml_sqrt(ctx, ggml_repeat(ctx, layer.rolling_variance, result)));
@@ -390,11 +425,6 @@ static void draw_detections(yolo_image & im, const std::vector<detection> & dets
     }
 }
 
-static void print_shape(int layer, const ggml_tensor * t)
-{
-    printf("Layer %2d output shape:  %3d x %3d x %4d x %3d\n", layer, (int)t->ne[0], (int)t->ne[1], (int)t->ne[2], (int)t->ne[3]);
-}
-
 static struct ggml_cgraph * build_graph(struct ggml_context * ctx_cgraph, const yolo_model & model) {
     struct ggml_cgraph * gf = ggml_new_graph(ctx_cgraph);
 
@@ -411,14 +441,18 @@ static struct ggml_cgraph * build_graph(struct ggml_context * ctx_cgraph, const 
                           result->nb[1], result->nb[2], result->nb[2] * (result->ne[2] / 2));
     print_shape(3, result);
     result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[3]);
+    ggml_tensor * layer_4 = result;
     print_shape(4, result);
     result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[4]);
     print_shape(5, result);
+    result = ggml_concat(ctx_cgraph, result, layer_4, 2);
+    print_shape(6, result);
+    result = apply_conv2d_1(ctx_cgraph, result, model.conv2d_layers[5]);
+    print_shape(7, result);
 
-    struct ggml_tensor * layer_5 = result;
-    ggml_set_output(layer_5);
-    ggml_set_name(layer_5, "layer_5");
-    ggml_build_forward_expand(gf, layer_5);
+    ggml_set_output(result);
+    ggml_set_name(result, "output");
+    ggml_build_forward_expand(gf, result);
     return gf;
 
 
@@ -495,7 +529,7 @@ void detect(yolo_image & img, struct ggml_cgraph * gf, const yolo_model & model,
         return;
     }
 
-    ggml_tensor * out_layer = ggml_graph_get_tensor(gf, "layer_5");
+    ggml_tensor * out_layer = ggml_graph_get_tensor(gf, "output");
 
     std::vector<float> output;
     output.resize(ggml_nbytes(out_layer)/sizeof(float));

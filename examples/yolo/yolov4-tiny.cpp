@@ -111,20 +111,13 @@ static bool load_model(const std::string & fname, yolo_model & model) {
 
     model.width  = 416;
     model.height = 416;
-    model.conv2d_layers.resize(18);
+    model.conv2d_layers.resize(21);
     model.conv2d_layers[0].stride = 2;
     model.conv2d_layers[1].stride = 2;
     model.conv2d_layers[17].batch_normalize = false;
     model.conv2d_layers[17].activate = false;
-
-    // model.conv2d_layers[7].padding = 0;
-    // model.conv2d_layers[9].padding = 0;
-    // model.conv2d_layers[9].batch_normalize = false;
-    // model.conv2d_layers[9].activate = false;
-    // model.conv2d_layers[10].padding = 0;
-    // model.conv2d_layers[12].padding = 0;
-    // model.conv2d_layers[12].batch_normalize = false;
-    // model.conv2d_layers[12].activate = false;
+    model.conv2d_layers[20].batch_normalize = false;
+    model.conv2d_layers[20].activate = false;
     for (int i = 0; i < (int)model.conv2d_layers.size(); i++) {
         char name[256];
         snprintf(name, sizeof(name), "l%d_weights", i);
@@ -491,6 +484,7 @@ static struct ggml_cgraph * build_graph(struct ggml_context * ctx_cgraph, const 
     result = ggml_concat(ctx_cgraph, result, layer_20, 2);
     print_shape(22, result);
     result = apply_conv2d_1(ctx_cgraph, result, model.conv2d_layers[13]);
+    ggml_tensor * layer_23 = result;
     print_shape(23, result);
     result = ggml_concat(ctx_cgraph, layer_18, result, 2);
     print_shape(24, result);
@@ -499,72 +493,31 @@ static struct ggml_cgraph * build_graph(struct ggml_context * ctx_cgraph, const 
     result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[14]);
     print_shape(26, result);
     result = apply_conv2d_1(ctx_cgraph, result, model.conv2d_layers[15]);
+    ggml_tensor * layer_27 = result;
     print_shape(27, result);
     result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[16]);
     print_shape(28, result);
     result = apply_conv2d_1(ctx_cgraph, result, model.conv2d_layers[17]);
+    ggml_tensor * layer_29 = result;
+    ggml_set_output(layer_29);
+    ggml_set_name(layer_29, "layer_29");
     print_shape(29, result);
-
+    result = apply_conv2d_1(ctx_cgraph, layer_27, model.conv2d_layers[18]);
+    print_shape(32, result);
+    result = ggml_upscale(ctx_cgraph, result, 2, GGML_SCALE_MODE_NEAREST);
+    print_shape(33, result);
+    result = ggml_concat(ctx_cgraph, result, layer_23, 2);
+    print_shape(34, result);
+    result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[19]);
+    print_shape(35, result);
+    result = apply_conv2d_1(ctx_cgraph, result, model.conv2d_layers[20]);
+    print_shape(36, result);
 
     ggml_set_output(result);
     ggml_set_name(result, "output");
+    // ggml_build_forward_expand(gf, layer_29); ??
     ggml_build_forward_expand(gf, result);
     return gf;
-
-
-    // result = ggml_pool_2d(ctx_cgraph, result, GGML_OP_POOL_MAX, 2, 2, 2, 2, 0, 0);
-    // print_shape(1, result);
-    // result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[1]);
-    // print_shape(2, result);
-    // result = ggml_pool_2d(ctx_cgraph, result, GGML_OP_POOL_MAX, 2, 2, 2, 2, 0, 0);
-    // print_shape(3, result);
-    // result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[2]);
-    // print_shape(4, result);
-    // result = ggml_pool_2d(ctx_cgraph, result, GGML_OP_POOL_MAX, 2, 2, 2, 2, 0, 0);
-    // print_shape(5, result);
-    // result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[3]);
-    // print_shape(6, result);
-    // result = ggml_pool_2d(ctx_cgraph, result, GGML_OP_POOL_MAX, 2, 2, 2, 2, 0, 0);
-    // print_shape(7, result);
-    // result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[4]);
-    // struct ggml_tensor * layer_8 = result;
-    // print_shape(8, result);
-    // result = ggml_pool_2d(ctx_cgraph, result, GGML_OP_POOL_MAX, 2, 2, 2, 2, 0, 0);
-    // print_shape(9, result);
-    // result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[5]);
-    // print_shape(10, result);
-    // result = ggml_pool_2d(ctx_cgraph, result, GGML_OP_POOL_MAX, 2, 2, 1, 1, 0.5, 0.5);
-    // print_shape(11, result);
-    // result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[6]);
-    // print_shape(12, result);
-    // result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[7]);
-    // struct ggml_tensor * layer_13 = result;
-    // print_shape(13, result);
-    // result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[8]);
-    // print_shape(14, result);
-    // result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[9]);
-    // struct ggml_tensor * layer_15 = result;
-    // ggml_set_output(layer_15);
-    // ggml_set_name(layer_15, "layer_15");
-
-    // print_shape(15, result);
-    // result = apply_conv2d(ctx_cgraph, layer_13, model.conv2d_layers[10]);
-    // print_shape(18, result);
-    // result = ggml_upscale(ctx_cgraph, result, 2, GGML_SCALE_MODE_NEAREST);
-    // print_shape(19, result);
-    // result = ggml_concat(ctx_cgraph, result, layer_8, 2);
-    // print_shape(20, result);
-    // result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[11]);
-    // print_shape(21, result);
-    // result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[12]);
-    // struct ggml_tensor * layer_22 = result;
-    // ggml_set_output(layer_22);
-    // ggml_set_name(layer_22, "layer_22");
-    // print_shape(22, result);
-
-    // ggml_build_forward_expand(gf, layer_15);
-    // ggml_build_forward_expand(gf, layer_22);
-    // return gf;
 }
 
 void detect(yolo_image & img, struct ggml_cgraph * gf, const yolo_model & model, float thresh, const std::vector<std::string> & labels, const std::vector<yolo_image> & alphabet)

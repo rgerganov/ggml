@@ -49,6 +49,9 @@ if __name__ == '__main__':
     save_conv2d_layer(f, gguf_writer, "l15", 512, 256, 1) #27
     save_conv2d_layer(f, gguf_writer, "l16", 256, 512, 3) #28
     save_conv2d_layer(f, gguf_writer, "l17", 512, 255, 1, batch_normalize=False) #29
+    save_conv2d_layer(f, gguf_writer, "l18", 256, 128, 1)
+    save_conv2d_layer(f, gguf_writer, "l19", 384, 256, 3)
+    save_conv2d_layer(f, gguf_writer, "l20", 256, 255, 1, batch_normalize=False)
     f.close()
 
     gguf_writer.write_header_to_file()

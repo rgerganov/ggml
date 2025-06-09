@@ -16,10 +16,10 @@ def save_conv2d_layer(f, gguf_writer, prefix, inp_c, filters, size, batch_normal
         gguf_writer.add_tensor(prefix + "_rolling_variance", rolling_variance, raw_shape=(1, filters, 1, 1))
 
     weights_count = filters * inp_c * size * size
-    l0_weights = np.fromfile(f, dtype=np.float32, count=weights_count)
+    weights = np.fromfile(f, dtype=np.float32, count=weights_count)
     ## ggml doesn't support f32 convolution yet, use f16 instead
-    l0_weights = l0_weights.astype(np.float16)
-    gguf_writer.add_tensor(prefix + "_weights", l0_weights, raw_shape=(filters, inp_c, size, size))
+    weights = weights.astype(np.float16)
+    gguf_writer.add_tensor(prefix + "_weights", weights, raw_shape=(filters, inp_c, size, size))
 
 
 if __name__ == '__main__':
@@ -37,13 +37,18 @@ if __name__ == '__main__':
     save_conv2d_layer(f, gguf_writer, "l3", 32, 32, 3)
     save_conv2d_layer(f, gguf_writer, "l4", 32, 32, 3)
     save_conv2d_layer(f, gguf_writer, "l5", 64, 64, 1)
-    # save_conv2d_layer(f, gguf_writer, "l6", 512, 1024, 3)
-    # save_conv2d_layer(f, gguf_writer, "l7", 1024, 256, 1)
-    # save_conv2d_layer(f, gguf_writer, "l8", 256, 512, 3)
-    # save_conv2d_layer(f, gguf_writer, "l9", 512, 255, 1, batch_normalize=False)
-    # save_conv2d_layer(f, gguf_writer, "l10", 256, 128, 1)
-    # save_conv2d_layer(f, gguf_writer, "l11", 384, 256, 3)
-    # save_conv2d_layer(f, gguf_writer, "l12", 256, 255, 1, batch_normalize=False)
+    save_conv2d_layer(f, gguf_writer, "l6", 128, 128, 3)
+    save_conv2d_layer(f, gguf_writer, "l7", 64, 64, 3)
+    save_conv2d_layer(f, gguf_writer, "l8", 64, 64, 3)
+    save_conv2d_layer(f, gguf_writer, "l9", 128, 128, 1)
+    save_conv2d_layer(f, gguf_writer, "l10", 256, 256, 3)
+    save_conv2d_layer(f, gguf_writer, "l11", 128, 128, 3)
+    save_conv2d_layer(f, gguf_writer, "l12", 128, 128, 3)
+    save_conv2d_layer(f, gguf_writer, "l13", 256, 256, 1)
+    save_conv2d_layer(f, gguf_writer, "l14", 512, 512, 3) #26
+    save_conv2d_layer(f, gguf_writer, "l15", 512, 256, 1) #27
+    save_conv2d_layer(f, gguf_writer, "l16", 256, 512, 3) #28
+    save_conv2d_layer(f, gguf_writer, "l17", 512, 255, 1, batch_normalize=False) #29
     f.close()
 
     gguf_writer.write_header_to_file()

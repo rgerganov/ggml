@@ -111,9 +111,11 @@ static bool load_model(const std::string & fname, yolo_model & model) {
 
     model.width  = 416;
     model.height = 416;
-    model.conv2d_layers.resize(6);
+    model.conv2d_layers.resize(18);
     model.conv2d_layers[0].stride = 2;
     model.conv2d_layers[1].stride = 2;
+    model.conv2d_layers[17].batch_normalize = false;
+    model.conv2d_layers[17].activate = false;
 
     // model.conv2d_layers[7].padding = 0;
     // model.conv2d_layers[9].padding = 0;
@@ -203,7 +205,7 @@ static ggml_tensor * ggml_conv_2d_1(
     inp = ggml_cont(ctx, ggml_transpose(ctx, inp));
     ggml_tensor * result = ggml_mul_mat(ctx, w, inp);
     result =  ggml_cont(ctx, ggml_transpose(ctx, result));
-    return ggml_reshape_4d(ctx, result, b->ne[0], b->ne[1], b->ne[2], b->ne[3]);
+    return ggml_reshape_4d(ctx, result, b->ne[0], b->ne[1], a->ne[3], 1);
 }
 
 
@@ -435,6 +437,7 @@ static struct ggml_cgraph * build_graph(struct ggml_context * ctx_cgraph, const 
     result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[1]);
     print_shape(1, result);
     result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[2]);
+    ggml_tensor * layer_2 = result;
     print_shape(2, result);
     // layer3 is the second half of layer2
     result = ggml_view_3d(ctx_cgraph, result, result->ne[0], result->ne[1], result->ne[2] / 2,
@@ -449,6 +452,59 @@ static struct ggml_cgraph * build_graph(struct ggml_context * ctx_cgraph, const 
     print_shape(6, result);
     result = apply_conv2d_1(ctx_cgraph, result, model.conv2d_layers[5]);
     print_shape(7, result);
+    result = ggml_concat(ctx_cgraph, layer_2, result, 2);
+    print_shape(8, result);
+    result = ggml_pool_2d(ctx_cgraph, result, GGML_OP_POOL_MAX, 2, 2, 2, 2, 0, 0);
+    print_shape(9, result);
+    result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[6]);
+    ggml_tensor * layer_10 = result;
+    print_shape(10, result);
+    // layer11 is the second half of layer10
+    result = ggml_view_3d(ctx_cgraph, result, result->ne[0], result->ne[1], result->ne[2] / 2,
+                          result->nb[1], result->nb[2], result->nb[2] * (result->ne[2] / 2));
+    print_shape(11, result);
+    result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[7]);
+    ggml_tensor * layer_12 = result;
+    print_shape(12, result);
+    result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[8]);
+    print_shape(13, result);
+    result = ggml_concat(ctx_cgraph, result, layer_12, 2);
+    print_shape(14, result);
+    result = apply_conv2d_1(ctx_cgraph, result, model.conv2d_layers[9]);
+    print_shape(15, result);
+    result = ggml_concat(ctx_cgraph, layer_10, result, 2);
+    print_shape(16, result);
+    result = ggml_pool_2d(ctx_cgraph, result, GGML_OP_POOL_MAX, 2, 2, 2, 2, 0, 0);
+    print_shape(17, result);
+    result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[10]);
+    ggml_tensor * layer_18 = result;
+    print_shape(18, result);
+    // layer19 is the second half of layer18
+    result = ggml_view_3d(ctx_cgraph, result, result->ne[0], result->ne[1], result->ne[2] / 2,
+                          result->nb[1], result->nb[2], result->nb[2] * (result->ne[2] / 2));
+    print_shape(19, result);
+    result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[11]);
+    ggml_tensor * layer_20 = result;
+    print_shape(20, result);
+    result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[12]);
+    print_shape(21, result);
+    result = ggml_concat(ctx_cgraph, result, layer_20, 2);
+    print_shape(22, result);
+    result = apply_conv2d_1(ctx_cgraph, result, model.conv2d_layers[13]);
+    print_shape(23, result);
+    result = ggml_concat(ctx_cgraph, layer_18, result, 2);
+    print_shape(24, result);
+    result = ggml_pool_2d(ctx_cgraph, result, GGML_OP_POOL_MAX, 2, 2, 2, 2, 0, 0);
+    print_shape(25, result);
+    result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[14]);
+    print_shape(26, result);
+    result = apply_conv2d_1(ctx_cgraph, result, model.conv2d_layers[15]);
+    print_shape(27, result);
+    result = apply_conv2d(ctx_cgraph, result, model.conv2d_layers[16]);
+    print_shape(28, result);
+    result = apply_conv2d_1(ctx_cgraph, result, model.conv2d_layers[17]);
+    print_shape(29, result);
+
 
     ggml_set_output(result);
     ggml_set_name(result, "output");

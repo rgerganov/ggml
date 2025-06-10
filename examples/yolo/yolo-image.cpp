@@ -88,7 +88,7 @@ bool load_image(const char *fname, yolo_image & img)
     return true;
 }
 
-static yolo_image resize_image(const yolo_image & im, int w, int h)
+yolo_image resize_image(const yolo_image & im, int w, int h)
 {
     yolo_image resized(w, h, im.c);
     yolo_image part(w, im.h, im.c);

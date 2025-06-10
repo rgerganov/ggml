@@ -512,10 +512,9 @@ static struct ggml_cgraph * build_graph(struct ggml_context * ctx_cgraph, const 
     print_shape(35, result);
     result = apply_conv2d_1(ctx_cgraph, result, model.conv2d_layers[20]);
     print_shape(36, result);
-
     ggml_set_output(result);
-    ggml_set_name(result, "output");
-    // ggml_build_forward_expand(gf, layer_29); ??
+    ggml_set_name(result, "layer_36");
+    ggml_build_forward_expand(gf, layer_29);
     ggml_build_forward_expand(gf, result);
     return gf;
 }
@@ -523,7 +522,8 @@ static struct ggml_cgraph * build_graph(struct ggml_context * ctx_cgraph, const 
 void detect(yolo_image & img, struct ggml_cgraph * gf, const yolo_model & model, float thresh, const std::vector<std::string> & labels, const std::vector<yolo_image> & alphabet)
 {
     std::vector<detection> detections;
-    yolo_image sized = letterbox_image(img, model.width, model.height);
+    //yolo_image sized = letterbox_image(img, model.width, model.height);
+    yolo_image sized = resize_image(img, model.width, model.height);
     struct ggml_tensor * input = ggml_graph_get_tensor(gf, "input");
 
     // save input to file for debugging
@@ -538,29 +538,30 @@ void detect(yolo_image & img, struct ggml_cgraph * gf, const yolo_model & model,
         return;
     }
 
-    ggml_tensor * out_layer = ggml_graph_get_tensor(gf, "output");
+    struct ggml_tensor * layer_29 = ggml_graph_get_tensor(gf, "layer_29");
+    yolo_layer yolo30{ 80, {3, 4, 5}, {10, 14, 23, 27, 37,58, 81, 82, 135, 169, 344, 319}, layer_29};
+    apply_yolo(yolo30);
+    {
+        // save predictions to file for debugging
+        std::ofstream out("yolo30.bin", std::ios::binary);
+        out.write((char *)yolo30.predictions.data(), yolo30.predictions.size() * sizeof(float));
+        out.close();
+    }
+    get_yolo_detections(yolo30, detections, img.w, img.h, model.width, model.height, thresh);
 
-    std::vector<float> output;
-    output.resize(ggml_nbytes(out_layer)/sizeof(float));
-    ggml_backend_tensor_get(out_layer, output.data(), 0, ggml_nbytes(out_layer));
+    struct ggml_tensor * layer_36 = ggml_graph_get_tensor(gf, "layer_36");
+    yolo_layer yolo37{ 80, {1, 2, 3}, {10, 14, 23, 27, 37,58, 81, 82, 135, 169, 344, 319}, layer_36};
+    apply_yolo(yolo37);
+    {
+        // save predictions to file for debugging
+        std::ofstream out("yolo37.bin", std::ios::binary);
+        out.write((char *)yolo37.predictions.data(), yolo37.predictions.size() * sizeof(float));
+        out.close();
+    }
+    get_yolo_detections(yolo37, detections, img.w, img.h, model.width, model.height, thresh);
 
-    // save output to file for debugging
-    std::ofstream out("output.bin", std::ios::binary);
-    out.write((char *)output.data(), ggml_nbytes(out_layer));
-    out.close();
-
-    // struct ggml_tensor * layer_15 = ggml_graph_get_tensor(gf, "layer_15");
-    // yolo_layer yolo16{ 80, {3, 4, 5}, {10, 14, 23, 27, 37,58, 81, 82, 135, 169, 344, 319}, layer_15};
-    // apply_yolo(yolo16);
-    // get_yolo_detections(yolo16, detections, img.w, img.h, model.width, model.height, thresh);
-
-    // struct ggml_tensor * layer_22 = ggml_graph_get_tensor(gf, "layer_22");
-    // yolo_layer yolo23{ 80, {0, 1, 2}, {10, 14, 23, 27, 37,58, 81, 82, 135, 169, 344, 319}, layer_22};
-    // apply_yolo(yolo23);
-    // get_yolo_detections(yolo23, detections, img.w, img.h, model.width, model.height, thresh);
-
-    // do_nms_sort(detections, yolo23.classes, .45);
-    // draw_detections(img, detections, thresh, labels, alphabet);
+    do_nms_sort(detections, yolo37.classes, .45);
+    draw_detections(img, detections, thresh, labels, alphabet);
 }
 
 struct yolo_params {
@@ -730,11 +731,11 @@ int main(int argc, char *argv[])
     const int64_t t_start_ms = ggml_time_ms();
     detect(img, gf, model, params.thresh, labels, alphabet);
     const int64_t t_detect_ms = ggml_time_ms() - t_start_ms;
-    // if (!save_image(img, params.fname_out.c_str(), 80)) {
-    //     fprintf(stderr, "%s: failed to save image to '%s'\n", __func__, params.fname_out.c_str());
-    //     return 1;
-    // }
-    // printf("Detected objects saved in '%s' (time: %f sec.)\n", params.fname_out.c_str(), t_detect_ms / 1000.0f);
+    if (!save_image(img, params.fname_out.c_str(), 80)) {
+        fprintf(stderr, "%s: failed to save image to '%s'\n", __func__, params.fname_out.c_str());
+        return 1;
+    }
+    printf("Detected objects saved in '%s' (time: %f sec.)\n", params.fname_out.c_str(), t_detect_ms / 1000.0f);
 
     ggml_free(ctx_cgraph);
     ggml_gallocr_free(allocr);
